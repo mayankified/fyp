@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>WCE Mobile Stream</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            text-align: center;
+            background: #111;
+            color: #eee;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        h3 { margin: 10px 0; }
+        
+        /* The container for the video feed */
+        #video-container {
+            position: relative;
+            width: 100%;
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            background: #000;
+        }
+
+        /* The image returned by the server (Annotated) */
+        #resultImg {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: none; /* Hidden until stream starts */
+        }
+
+        /* The raw camera video (Hidden, used for capture only) */
+        #videoRaw {
+            display: none; 
+        }
+
+        /* Controls area */
+        .controls {
+            padding: 20px;
+            background: #222;
+        }
+
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            max-width: 300px;
+            font-weight: bold;
+        }
+        
+        #startBtn { background-color: #28a745; color: white; }
+        #stopBtn { background-color: #dc3545; color: white; display: none; }
+        
+        .status {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 10px;
+        }
+    </style>
+    
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+
+    <h3>YOLO Mobile Stream</h3>
+
+    <div id="video-container">
+        <video id="videoRaw" autoplay playsinline></video>
+        <canvas id="canvas" style="display:none;"></canvas>
+        <img id="resultImg" alt="Waiting for stream..." />
+    </div>
+
+    <div class="controls">
+        <button id="startBtn">Start Camera</button>
+        <button id="stopBtn">Stop Stream</button>
+        <div class="status" id="statusMsg">Ready to connect</div>
+    </div>
+
+    <script>
+        const socket = io();
+        const videoRaw = document.getElementById('videoRaw');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const resultImg = document.getElementById('resultImg');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusMsg = document.getElementById('statusMsg');
+
+        let streamInterval = null;
+        let isStreaming = false;
+
+        // Configuration
+        const FPS = 10; // Send frames 10 times per second
+        const QUALITY = 0.6; // JPEG quality (0.0 to 1.0) - Lower is faster
+        const TARGET_WIDTH = 640; // Resize before sending to save bandwidth
+
+        // 1. Handle Socket Connection
+        socket.on('connect', () => {
+            statusMsg.innerText = "Connected to Server via Socket.IO";
+            console.log("Connected:", socket.id);
+        });
+
+        socket.on('disconnect', () => {
+            statusMsg.innerText = "Disconnected from Server";
+            stopStreaming();
+        });
+
+        // 2. Receive Annotated Frames from Server
+        socket.on('annotated_frame', (data) => {
+            if (data.image) {
+                resultImg.src = data.image;
+            }
+        });
+
+        // 3. Start Button Logic
+        startBtn.addEventListener('click', async () => {
+            try {
+                statusMsg.innerText = "Requesting Camera Access...";
+                
+                // Constraints: Use rear camera ('environment')
+                const constraints = {
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoRaw.srcObject = stream;
+                
+                // Wait for video metadata to load so we know dimensions
+                videoRaw.onloadedmetadata = () => {
+                    videoRaw.play();
+                    startStreaming();
+                };
+            } catch (err) {
+                console.error("Camera Error:", err);
+                alert("Error accessing camera: " + err.message + "\n\nNote: Browsers block camera access on HTTP unless it is 'localhost'. If you are on mobile WiFi, you might need to enable 'Unsafe origins' in chrome://flags or serve via HTTPS.");
+                statusMsg.innerText = "Camera Access Denied";
+            }
+        });
+
+        // 4. Stop Button Logic
+        stopBtn.addEventListener('click', () => {
+            stopStreaming();
+            // Stop camera tracks
+            if (videoRaw.srcObject) {
+                videoRaw.srcObject.getTracks().forEach(track => track.stop());
+                videoRaw.srcObject = null;
+            }
+        });
+
+        function startStreaming() {
+            isStreaming = true;
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'block';
+            resultImg.style.display = 'block';
+            statusMsg.innerText = "Streaming to Server...";
+
+            // Tell server to initialize processing queue
+            socket.emit('start_stream', {});
+
+            // Set canvas size for resizing
+            const aspectRatio = videoRaw.videoHeight / videoRaw.videoWidth;
+            canvas.width = TARGET_WIDTH;
+            canvas.height = TARGET_WIDTH * aspectRatio;
+
+            // Loop to capture and send frames
+            streamInterval = setInterval(() => {
+                if (!isStreaming) return;
+
+                // Draw video frame to canvas (resize happens here)
+                ctx.drawImage(videoRaw, 0, 0, canvas.width, canvas.height);
+
+                // Convert to base64 JPEG
+                const dataURL = canvas.toDataURL('image/jpeg', QUALITY);
+
+                // Emit to server
+                socket.emit('frame', { image: dataURL });
+
+            }, 1000 / FPS);
+        }
+
+        function stopStreaming() {
+            isStreaming = false;
+            clearInterval(streamInterval);
+            socket.emit('stop_stream');
+            
+            startBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            resultImg.style.display = 'none';
+            statusMsg.innerText = "Stopped.";
+        }
+    </script>
+</body>
+</html>

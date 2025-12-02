@@ -1,4 +1,3 @@
-<!-- templates/viewer.html -->
 <!doctype html>
 <html>
 <head>
@@ -8,16 +7,24 @@
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"
     integrity="sha384-+q8H8gEy7aY4u+1em/8w7b0a0w5hZ9m5p+0I08m8p1cJzqgQF9fBq3Xw5bE6v8c7"
     crossorigin="anonymous"></script>
-  <style> body { font-family: Arial; } img { max-width: 100%; } </style>
+  <style> 
+    body { font-family: Arial; text-align: center; padding: 20px;} 
+    img { max-width: 100%; border: 1px solid #ccc; margin-top: 10px; } 
+    input { padding: 10px; font-size: 16px; }
+    button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
+    button:hover { background: #0056b3; }
+  </style>
 </head>
 <body>
   <h3>Live Detection Viewer</h3>
-  <p>Enter stream session id (leave blank to auto-join last connected mobile session):</p>
-  <input id="roomInput" placeholder="session id (optional)" style="width:60%"/>
-  <button id="joinBtn">Join</button>
+  <p>Enter the <b>Socket ID</b> from the mobile phone to view its stream:</p>
+  
+  <input id="roomInput" placeholder="Enter Mobile Socket ID"/>
+  <button id="joinBtn">Join Stream</button>
+  
   <div>
-    <p>Status: <span id="status">idle</span></p>
-    <img id="frameImg" src="" alt="annotated frame will appear here"/>
+    <p>Status: <span id="status">Idle</span></p>
+    <img id="frameImg" src="" alt="Stream will appear here..."/>
   </div>
 
 <script>
@@ -27,31 +34,31 @@ const img = document.getElementById('frameImg');
 const joinBtn = document.getElementById('joinBtn');
 const roomInput = document.getElementById('roomInput');
 
-let currentRoom = null;
-
-joinBtn.addEventListener('click', () => {
-  const r = roomInput.value.trim();
-  if (!r) {
-    alert("If you leave blank, you'll automatically view the latest stream (server must support it). You can also paste the mobile session id.");
-  }
-  // join a room by asking server to join (we use same connect->room approach by telling server to join)
-  // Simple approach: we rely on the server emitting frames to a room name equal to the mobile session id.
-  // So to view, just tell server to bind this socket to that room.
-  const room = r || null;
-  fetch('/_join_room', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({room})})
-    .then(res => res.json())
-    .then(data => {
-      if(data.ok){
-        currentRoom = data.room;
-        status.innerText = 'joined ' + currentRoom;
-      } else {
-        status.innerText = 'failed to join';
-      }
-    })
-    .catch(e => { status.innerText = 'error'; console.error(e); });
+// 1. Connection status
+socket.on('connect', () => {
+    console.log("Viewer connected:", socket.id);
+    status.innerText = "Connected to server. Ready to join.";
 });
 
-// fallback: server may broadcast to all viewers if room not provided; we just listen:
+// 2. Handle 'Join' button click
+joinBtn.addEventListener('click', () => {
+  const roomID = roomInput.value.trim();
+  if (!roomID) {
+    alert("Please enter the Mobile Socket ID displayed on the phone screen.");
+    return;
+  }
+  
+  // Use Socket.IO to tell server we want to join this room
+  status.innerText = 'Requesting to join ' + roomID + '...';
+  socket.emit('join_stream', { room: roomID });
+});
+
+// 3. Listen for confirmation from server
+socket.on('stream_ready', (data) => {
+    status.innerText = "Streaming: " + data.message;
+});
+
+// 4. Receive and display frames
 socket.on('annotated_frame', (msg) => {
   if (msg && msg.image){
     img.src = msg.image;

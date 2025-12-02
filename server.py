@@ -1,9 +1,8 @@
-
 import os
 import base64
-import io
 import argparse
 import threading
+import socket
 from queue import Queue
 
 from flask import Flask, render_template, request
@@ -13,19 +12,22 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-
+# --- Configuration ---
 MODEL_PATH = "best.pt"
 CONF_THRESH = 0.25
 PROCESS_FPS = 10  
 
-
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
-
 print("Loading model:", MODEL_PATH)
-model = YOLO(MODEL_PATH)
-
+# Ensure the model exists or this will crash
+try:
+    model = YOLO(MODEL_PATH)
+except Exception as e:
+    print(f"Error loading model: {e}")
+    print("Make sure 'best.pt' is in the same folder!")
+    exit(1)
 
 client_queues = {}
 client_threads = {}
@@ -39,7 +41,6 @@ def process_frames(client_sid, q):
     while True:
         item = q.get()
         if item is None:
-            
             break
         timestamp, img_bgr = item
         
@@ -48,34 +49,31 @@ def process_frames(client_sid, q):
             time.sleep(min_interval - elapsed)
         last_time = time.time()
 
-        
         try:
-            
+            # Run YOLO inference
             results = model.predict(source=img_bgr, conf=CONF_THRESH, verbose=False)
-
             
+            # Plot results on the frame
             annotated = results[0].plot()  
-            
             annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
         except Exception as e:
             print("Prediction error:", e)
-            
             annotated_bgr = img_bgr
 
-        
+        # Encode back to JPEG
         success, jpg = cv2.imencode('.jpg', annotated_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if not success:
-            print("Failed to encode jpg")
             continue
+            
         b64 = base64.b64encode(jpg.tobytes()).decode('utf-8')
         payload = 'data:image/jpeg;base64,' + b64
 
-        
+        # Send back to the specific room (client_sid)
         socketio.emit('annotated_frame', {'image': payload}, room=client_sid)
 
 @app.route('/')
 def index():
-    return "YOLO live server running. Open /mobile on phone and /viewer on laptop."
+    return "YOLO Live Server. Go to /mobile on your phone."
 
 @app.route('/mobile')
 def mobile_page():
@@ -87,12 +85,12 @@ def viewer_page():
 
 @socketio.on('connect')
 def on_connect():
-    print('Client connected', request.sid)
+    print('Client connected:', request.sid)
 
 @socketio.on('disconnect')
 def on_disconnect():
     sid = request.sid
-    print('Client disconnected', sid)
+    print('Client disconnected:', sid)
     
     with lock:
         q = client_queues.pop(sid, None)
@@ -102,13 +100,19 @@ def on_disconnect():
     if thr and thr.is_alive():
         thr.join(timeout=1)
 
+# --- NEW: Helper for Viewer to Join Stream ---
+@socketio.on('join_stream')
+def on_join_stream(data):
+    room = data.get('room')
+    if room:
+        join_room(room)
+        print(f"Viewer {request.sid} joined room {room}")
+        emit('stream_ready', {'message': f'Joined {room}'})
+
 @socketio.on('start_stream')
 def on_start_stream(data):
-    """Called by mobile client to register as a sender.
-       data can contain optional info.
-    """
     sid = request.sid
-    print(f"start_stream from {sid}")
+    print(f"Starting stream for {sid}")
     
     q = Queue(maxsize=5)
     thr = threading.Thread(target=process_frames, args=(sid, q), daemon=True)
@@ -123,7 +127,6 @@ def on_start_stream(data):
 @socketio.on('stop_stream')
 def on_stop_stream():
     sid = request.sid
-    print('stop_stream', sid)
     with lock:
         q = client_queues.pop(sid, None)
         thr = client_threads.pop(sid, None)
@@ -135,7 +138,6 @@ def on_stop_stream():
 
 @socketio.on('frame')
 def on_frame(data):
-    """Receive base64 frame from mobile, decode and enqueue for processing."""
     sid = request.sid
     b64 = data.get('image', None)
     if b64 is None:
@@ -148,45 +150,58 @@ def on_frame(data):
         arr = np.frombuffer(decoded, dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)  
         if img is None:
-            print("Warning: decoded image is None")
             return
-    except Exception as e:
-        print("Error decoding frame:", e)
+    except Exception:
         return
 
-    
     with lock:
         q = client_queues.get(sid)
     if q:
-        
         try:
             if q.full():
                 try:
                     _ = q.get_nowait()
                 except:
                     pass
-            q.put_nowait((time.time(), img))
-        except Exception as e:
-            print("Queue put error:", e)
-    else:
-        
-        print("No queue for sid; ignoring frame")
+            q.put_nowait((0, img))
+        except Exception:
+            pass
+
+def get_ip_address():
+    """Finds the local IP address of this machine."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # doesn't even have to be reachable
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
 if __name__ == '__main__':
-    import time
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', default='0.0.0.0', help='host')
     parser.add_argument('--port', default=5000, type=int, help='port')
-    parser.add_argument('--model', default=None, help='model path (override env)')
-    parser.add_argument('--fps', default=None, type=int, help='processing fps')
-    parser.add_argument('--conf', default=None, type=float, help='confidence threshold')
+    parser.add_argument('--model', default=None, help='model path')
     args = parser.parse_args()
+
     if args.model:
         MODEL_PATH = args.model
-    if args.fps:
-        PROCESS_FPS = args.fps
-    if args.conf:
-        CONF_THRESH = args.conf
 
-    print("Server starting on %s:%d" % (args.host, args.port))
-    socketio.run(app, host=args.host, port=args.port)
+    local_ip = get_ip_address()
+    port = args.port
+
+    print("-" * 50)
+    print(f" SERVER STARTED SUCCESSFULLY")
+    print("-" * 50)
+    print(f"1. On Mobile, open this URL:\n   http://{local_ip}:{port}/mobile")
+    print("-" * 50)
+    print(f"2. On Laptop (Viewer), open this URL:\n   http://localhost:{port}/viewer")
+    print("-" * 50)
+    print("NOTE: On Mobile Chrome, ensure you enabled 'Insecure origins treated as secure'")
+    print(f"      in chrome://flags and added: http://{local_ip}:{port}")
+    print("-" * 50)
+
+    socketio.run(app, host=args.host, port=port)
