@@ -4,64 +4,53 @@
   <meta charset="utf-8" />
   <title>Viewer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"
-    integrity="sha384-+q8H8gEy7aY4u+1em/8w7b0a0w5hZ9m5p+0I08m8p1cJzqgQF9fBq3Xw5bE6v8c7"
-    crossorigin="anonymous"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style> 
     body { font-family: Arial; text-align: center; padding: 20px;} 
     img { max-width: 100%; border: 1px solid #ccc; margin-top: 10px; } 
-    input { padding: 10px; font-size: 16px; }
-    button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
-    button:hover { background: #0056b3; }
+    .controls { margin-top: 15px; padding: 10px; border: 1px solid #eee; display: inline-block;}
+    label { font-size: 18px; cursor: pointer; }
   </style>
 </head>
 <body>
   <h3>Live Detection Viewer</h3>
-  <p>Enter the <b>Socket ID</b> from the mobile phone to view its stream:</p>
   
-  <input id="roomInput" placeholder="Enter Mobile Socket ID"/>
-  <button id="joinBtn">Join Stream</button>
-  
+  <div class="controls">
+      <label>
+          <input type="checkbox" id="toggleAi" checked> 
+          Enable AI Detection
+      </label>
+  </div>
+
   <div>
-    <p>Status: <span id="status">Idle</span></p>
-    <img id="frameImg" src="" alt="Stream will appear here..."/>
+    <p>Status: <span id="status">Waiting for connection...</span></p>
+    <img id="frameImg" src="" alt="Waiting for stream..."/>
   </div>
 
 <script>
 const socket = io();
 const status = document.getElementById('status');
 const img = document.getElementById('frameImg');
-const joinBtn = document.getElementById('joinBtn');
-const roomInput = document.getElementById('roomInput');
+const toggleAi = document.getElementById('toggleAi');
 
-// 1. Connection status
 socket.on('connect', () => {
-    console.log("Viewer connected:", socket.id);
-    status.innerText = "Connected to server. Ready to join.";
+    status.innerText = "Connected. Waiting for Mobile to start stream...";
 });
 
-// 2. Handle 'Join' button click
-joinBtn.addEventListener('click', () => {
-  const roomID = roomInput.value.trim();
-  if (!roomID) {
-    alert("Please enter the Mobile Socket ID displayed on the phone screen.");
-    return;
-  }
-  
-  // Use Socket.IO to tell server we want to join this room
-  status.innerText = 'Requesting to join ' + roomID + '...';
-  socket.emit('join_stream', { room: roomID });
+// Toggle Detection Logic
+toggleAi.addEventListener('change', (e) => {
+    const isEnabled = e.target.checked;
+    socket.emit('toggle_detection', { enabled: isEnabled });
 });
 
-// 3. Listen for confirmation from server
 socket.on('stream_ready', (data) => {
-    status.innerText = "Streaming: " + data.message;
+    status.innerText = "Status: " + data.message;
 });
 
-// 4. Receive and display frames
 socket.on('annotated_frame', (msg) => {
-  if (msg && msg.image){
-    img.src = msg.image;
+  if (msg && msg.image) {
+      img.src = msg.image;
+      status.innerText = "Status: Receiving Live Feed";
   }
 });
 </script>
